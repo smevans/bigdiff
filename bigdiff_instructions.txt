@@ -1,0 +1,129 @@
+bigdiff by Steve Evans, March 1, 2007
+
+bigdiff is a perl script that compares 2 files.  It's original incarnation was
+to compare two files with ~ 50 million lines each by comparing the lines to one
+another (within minutes).  It then took on record definition to extract a
+comparison string (referred to as a record in the code) and compare those.
+It then needed sorting on that record, because a sort|uniq was cumbersome.
+Finally it needed to handle multiple records in each file.  I'm sure the next
+step is a true many to many join, but my head hurts just thinking about that.
+The original version was about 30 lines of code.  It is now 500 - but I do like
+white space and comments.  I've added logging features (part of my normal
+skeleton for scripting), which are not implemented.  If you wish to use logging,
+the hooks are there.
+
+If it is run as a standalone executeble, #!/usr/local/bin/perl is the location
+expected.  If this is causing problems, run the script through perl or change
+this line.  bigdiff creates 3 files: in_only_<file0> in_only_<file1> in_both
+in the current directory, where in_only_<file0> and in_only_<file1> contain the
+lines whose "record" is unique to it. 
+
+$ bigdiff
+Usage: bigdiff <file0> <file1>
+   or  bigdiff -cf <config_file>
+   or  bigdiff -[mlsu]f <config_file>
+
+               -c Checks the <config_file>.
+	       -l Prints the entire line (record only is default.)
+               -m Merges the input files.
+               -s Sorts the input files first.
+	       -u Uniqs the input files first.
+	       -v Debug
+
+There are two ways bigdiff can be run.  The first is input from 2 sorted files,
+that compares the entire line of each file.  Three files are created as output.
+One will be named "in_both" that contains lines where both lines match.  If
+there is a many:1 match, only the first match is put in the "in_both" file.  If
+the two files being compared are named "file_one" and "file_two", then the
+names of the other two files will be "in_only_file_one" and "in_only_file_two".  
+
+The second way it can be run is with a config file.  The config file is perl
+code that defines the following variables:
+
+Required:
+    $file0 = Name of first file to be compared.
+    $file1 = Name of second file to be compared.
+
+Recommended:
+    $in_both_basefile = Name of output file. (Default: "in_both")
+    &read_record0 = Subroutine name to get a information. (Default: read whole line).
+    &read_record1  
+    $record0 = The field or data that is to be compared.
+    $record1 
+
+Optional:
+    @other0 = Other data that is either discared or remerged in the output.
+    @other1
+    $final_OFS = Output field separator for final output.
+
+Defined in bigdiff:
+    $line0 = A data line. Use this to operate on to get other fields.
+    $line1 
+
+Configuration files must be checked first to make sure the fields are selected
+properly.  Run bigdiff -cf <config_file> to do this.  Tweak the perl in the
+config file until it is correct.
+
+To run the comparision: bigdiff -msf <config_file>.  You will probably need the
+-s option to sort on the fields. This is the equivalent of doing a sort|uniq on
+the input files. An intermediate file will be created for each with "_s" added
+to the end of the filename. If the -u option is used, the records will be uniqed - 
+only the first instance of a "record" will be kept.
+
+The -m option merges the contents of both input files.  @other0 and @other1
+must be defined or only the record is printed.  The "in_both" file will contain
+the field matched, the @other0 array, and the @other1 array.
+
+The -l prints the entire line of <file0> to in_only_<file0> and the entire line
+of <file1> to in_only_<file1> and in_both.  Make sure <file1> is the data you
+wish to see in the in_both file. Use -l in place of -m.
+
+For more examples, and a good starting place for a config file, see the
+bigdiff_example.conf file.
+
+----------------------------------------------------------------------------- 
+Example of config file:
+richard.conf:
+
+--------------------------------<snip>--------------------------------------------- 
+$file0 = "ALL.email.txt";
+$file1 = "richard_servers_not_reporting.txt";
+$in_both_basefile = "richard_servers_not_reporting.out";
+
+sub read_record0
+{
+        (undef,$record0, @other0) = split /\s+/, $line0;
+	# The first field in the file is discarded with the undef.
+	# In this case, it is blank, since each line starts
+	# with whitespace.
+}
+
+# When read_record1 is not defined, the whole line is the record.
+
+return;
+--------------------------------<snip>--------------------------------------------- 
+
+-------------------------- 
+richard_servers_not_reporting.txt:
+ARIBARCHP1
+MDBALTT09S19
+ARIBARCHP2
+ARMRTXQ01
+ASPRTXD01
+...
+
+-------------------------- 
+ALL.email.txt:
+        CHIADVLDAP06 is not retrieving data
+	CHIADVLDAP36 stopped retrieving data on 01/07/07
+	CHIADVLPAP55 is not retrieving data 
+...
+
+-------------------------- 
+richard_servers_not_reporting.out:
+ARIBARCHP1 is not retrieving data
+ARIBARCHP2 is not retrieving data
+CHELSEA2 is not retrieving data (This hostnames includes FQDM, research with Pete)
+CHISSD207 is not retrieving data
+...
+
