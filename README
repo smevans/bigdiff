@@ -1,0 +1,45 @@
+bigdiff
+=======
+
+Allows comparision of parsed lines of files with millions of records in seconds.  Written in Perl.
+
+ bigdiff:  Creates 3 files: in_only_file0 in_only_file1 in_both
+ in the current directory.
+ 
+ -f config_file Will define the fields for compairing.  The grouping of 
+ fields is referred to as a record. The config_file is a perl script defining
+ $file0, $file1, &read_record0, and &read_record1.  $record0, $record1, $line0,
+ $line1, @other0, and @other1 should all be defined within the subroutine.  undef
+ can be used as a place holder instead of @other if merge is not desired.  Output 
+ is in the current directory.
+
+ -c Checks the first line of the config_file.
+
+ -m This merges the contents of both input files.  @other0 and @other1 must be 
+ defined or only the record is printed.
+
+ -l prints the entire line of file0 to in_only_file0 and the entire line of
+ file1 to in_only_file1 and in_both.
+
+ -s (sort): Sort on a field for input into bigdiff.
+ Sorts both files by default and ads _s to the end of intermediate file.
+
+ -su (sortuniq): Sort and Uniq on a field for input into bigdiff.
+ Sorts both files by default and ads _su to the end of intermediate file.
+
+ For a change in the output print field separator, define $final_OFS in the config file.
+
+ Author: Steve Evans, 2006 
+
+ 1.5 20060615	Added config_file and merge.
+ 2.0	20060706	Added sortuniq and checking.
+ 2.1	20070214	Added many:1 compare. Added OFS logic. Added logging skeleton.
+
+ uname not working under Widows. Uncomment for UNIX
+ Depending upon shell, dos2ux may be needed under Windows/Cygwin
+<<<<<<< HEAD
+ Example file: dev/examples/bigdiff_examples.conf
+
+=======
+ Example file: dev/examples/bigdiff_examples.conf
+>>>>>>> bigdiff/master
