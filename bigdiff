@@ -1,0 +1,580 @@
+#!/usr/local/bin/perl 
+
+# Gittest
+
+# bigdiff:  Creates 3 files: in_only_<file0> in_only_<file1> in_both
+# in the current directory.
+# 
+# -f <config_file> Will define the fields for compairing.  The grouping of 
+# fields is referred to as a record. The <config_file> is a perl script defining
+# $file0, $file1, &read_record0, and &read_record1.  $record0, $record1, $line0,
+# $line1, @other0, and @other1 should all be defined within the subroutine.  undef
+# can be used as a place holder instead of @other if merge is not desired.  Output 
+# is in the current directory.
+#
+# -c Checks the first line of the <config_file>.
+#
+# -m This merges the contents of both input files.  @other0 and @other1 must be 
+# defined or only the record is printed.
+#
+# -l prints the entire line of <file0> to in_only_<file0> and the entire line of
+# <file1> to in_only_<file1> and in_both.
+#
+# -s (sort): Sort on a field for input into bigdiff.
+# Sorts both files by default and ads _s to the end of intermediate file.
+#
+# -su (sortuniq): Sort and Uniq on a field for input into bigdiff.
+# Sorts both files by default and ads _su to the end of intermediate file.
+#
+# For a change in the output print field separator, define $final_OFS in the config file.
+#
+# Author: Steve Evans, 2006 
+#
+# 1.5 	20060615	Added <config_file> and merge.
+# 2.0	20060706	Added sortuniq and checking.
+# 2.1	20070214	Added many:1 compare. 
+# 			Added OFS logic. 
+# 			Added logging skeleton.
+#
+# uname not working under Widows. Uncomment for UNIX
+# Depending upon shell, dos2ux may be needed under Windows/Cygwin
+# Example file: dev/examples/bigdiff_examples.conf
+#
+# TODO: Change file0, file1 to an array or at least clean up indirects.
+ 
+#-----------------------------------------------------------------------------
+# Load Modules and Libraries.
+
+  use English;
+  use Getopt::Std;
+  use File::Basename;
+  require 5.000;
+  use strict;
+  no strict 'refs';
+  use Posix qw(uname);
+
+#-----------------------------------------------------------------------------
+# Variables
+
+use vars qw(
+    $progname $hostname $LOG $MSGLOG $RUNFILE $ERRFILE $debug
+    $opt_m $opt_f $opt_c $opt_s $opt_u $opt_v $opt_h $opt_l
+    $record0
+    $record1
+    $line0
+    $line1
+    $eof0
+    $eof1
+    $file0
+    $file1
+    $out_dir
+    $out_file0
+    $out_file1
+    $out_file_both
+    $sort_file
+    $sort_file0
+    $sort_file1
+    $need_next0
+    $need_next1
+    $in0_count
+    $in1_count
+    $in_both_count
+    $in_both_basefile
+    $basefile0
+    $basefile1
+    $original_count
+    $final_count0
+    $final_count1
+    $final_count
+    $i
+    @other
+    @other0
+    @other1
+    %newlist
+
+    $file $line $record $read_record $prev_record $other $prev_other $eof
+
+    $many_flag0 $many_flag1 $many_count0 $many_count1
+    $prev_record0
+    $prev_record1
+    @prev_other0
+    @prev_other1
+    $prev_flag
+    $final_OFS
+);
+
+ 
+#-------------------------- 
+# Messaging defaults.
+
+$progname 	= basename($0);
+#$hostname 	= (uname)[1];
+
+$LOG		= "/tmp/$progname.log";
+$MSGLOG		= "/tmp/$progname.msg";
+$RUNFILE	= "/tmp/$progname.pid";
+$ERRFILE	= "/tmp/$progname.err";
+
+#open (LOG,    ">>$LOG")    || error(1, $LOG);
+#open (MSGLOG, ">>$MSGLOG") || error(1, $MSGLOG);
+
+#-------------------------- 
+# Defaults to be set before reading config file.
+
+$in_both_basefile = "in_both.csv";
+$final_OFS 	= " ";
+
+#-------------------------- 
+# Command line options
+
+getopts('lmcsuvf:');
+
+if ( $opt_f )
+{
+	do "$opt_f" if -f "$opt_f" || error(1,$opt_f);
+} else {
+	$file0 = $ARGV[0];
+	$file1 = $ARGV[1];
+	sub read_record0 { $record0 = $line0; }
+	sub read_record1 { $record1 = $line1; }
+}
+
+$debug	= $opt_v; # Debug
+
+error(0) if ($opt_h);
+error(3) if ( $opt_m && ! $opt_f );
+error(11) if ( $opt_l && ! $opt_f );
+error(4) if ( $opt_s && ! $opt_f );
+error(5) if ( $opt_c && ! $opt_f );
+error(6) if ( $opt_u && ! $opt_s );
+error(10) if ( $opt_m && $opt_l );
+error(7) if ( ! $file0 );
+
+#-------------------------- 
+# Defaults
+
+$basefile0 	= basename $file0;
+$basefile1 	= basename $file1;
+$out_dir 	= ".";
+$out_file_both 	= "$out_dir/$in_both_basefile";
+$out_file0 	= "$out_dir/in_only_${basefile0}";
+$out_file1 	= "$out_dir/in_only_${basefile1}";
+
+if ( $opt_u )
+{
+       $sort_file0 = "${file0}_su";
+       $sort_file1 = "${file1}_su";
+} else {
+       $sort_file0 = "${file0}_s";
+       $sort_file1 = "${file1}_s";
+}
+
+$need_next0 	= 1;
+$need_next1 	= 1;
+
+$eof0 		= 0;
+$eof1 		= 0;
+$in0_count 	= 0;
+$in1_count 	= 0;
+$in_both_count 	= 0;
+$many_count0 	= 0;
+$many_count1 	= 0;
+$final_count0 	= 0;
+$final_count1 	= 0;
+
+#-----------------------------------------------------------------------------
+# Main - check (-c)
+
+if ( $opt_c)
+{
+	print "\n";
+	print "Checking $opt_f...\n";
+	print "\n";
+	print "file0 : $file0\n";
+	print "file1 : $file1\n";
+	print "\n";
+	
+	# loop through file0, file1
+	for $i ( 0,1 )
+	{
+		&indirect; # Go get indrect pointers.
+
+		open (FILE, "$$file") || error(1,$$file);
+		unless ( defined($$line = <FILE> ) ) { error(8,$$file); }
+
+		chomp $$line;
+		&read_record;
+		print "line$i   : $$line\n"; 
+		print "record$i : $$record\n";
+		print "other$i  : @$other\n";
+		print "\n";
+	}
+	exit;
+}
+
+#-----------------------------------------------------------------------------
+# Main - sort (-s)
+
+if ( $opt_s )
+{
+	# loop through file0, file1
+	for $i ( 0,1 )
+	{
+		&indirect; # Go get indrect pointers.
+		
+		$original_count = 0;
+		 
+		#------- Open files -------- 
+		open (OUTFILE, ">$$sort_file") || error(1,$$sort_file);
+		open (FILE, "$$file") || error(1,$$file);
+
+		if ( $opt_u )
+		{
+			# TODO: Shwartz this:
+			while ( <FILE> )
+			{
+				$$line = $_;
+				chomp $$line;
+				&read_record;
+				print "$original_count : $$record : $$line\n" if $debug;
+
+				unless ( $newlist{$$record} )	# This does uniq. Skip if not uniq & flag set.
+				{
+					$newlist{$$record} = $$line; 	
+					$$final_count ++;
+				}
+				print "$$record : $newlist{$$record} : $opt_u\n" if $debug;
+			}
+
+			# Now for sort and output.
+			foreach $record ( sort keys %newlist )
+			{
+				print OUTFILE "$newlist{$record}\n";
+			}
+
+			print "$$file \tcount: $original_count \n";
+			print "$$sort_file \tcount: $$final_count \n";
+
+		} else {
+			# See "Perl Cookbook", 4.15: Shwartzian Transform 
+			# If I really knew how this worked, I'd be making more money.
+			print OUTFILE	map  { $_->[0] }   # Not sure how this works, but maps the whole line.
+					sort { $a->[1] cmp $b->[1] }
+					map  { [ $$line = $_, &read_record ] }
+					<FILE>; 
+
+			print "$$file \tcount: $original_count \n";
+			$$final_count = $original_count;
+
+		}
+
+		close (OUTFILE);
+		close (FILE);
+		undef %newlist;
+	}
+	print "\n";
+	$file0 = $sort_file0;
+	$file1 = $sort_file1;
+}
+
+
+#-----------------------------------------------------------------------------
+# Main - bigdiff
+
+#------- Open files -------- 
+
+open (FILE0, "$file0") || error(1,$file0);
+open (FILE1, "$file1") || error(1,$file1);
+
+open (INBOTH, ">$out_file_both")  || error(1,$out_file_both);
+open (INFILE0, ">$out_file0") || error(1,$out_file0);
+open (INFILE1, ">$out_file1") || error(1,$out_file1);
+
+ 
+#---------------
+# Churn, baby, churn.
+
+# $final_OFS allows an output field separator to be set - needed here because of Shwartz.
+$, = $final_OFS;
+
+# Read first lines.
+unless ( defined($line0 = <FILE0> ) ) { error(8,$file0); }
+unless ( defined($line1 = <FILE1> ) ) { error(8,$file1); }
+
+while ( $eof0 == 0 && $eof1 == 0 )
+{
+	$need_next0 = 0; 
+	$need_next1 = 0;
+	$many_flag0 = 0;
+	$many_flag1 = 0;
+
+	chomp $line0;
+	chomp $line1;
+
+	#Define records here.
+	$i=0; &indirect; &read_record;
+	$i=1; &indirect; &read_record;
+
+	if ( $record0 eq $record1 ) 
+	{
+		&print_inboth;
+	} else {
+		if ( $record0 lt $record1 )
+		     { &print_in0; } 
+		else { &print_in1; }	
+	}
+
+	if ( $need_next0 == 1 ) 
+    	{ 
+		$i=0; &indirect;
+		&read_next;
+		$need_next0 = 0;
+		while ( $record0 eq $prev_record0 )
+		{
+			$many_flag0++;
+			if ( $record0 eq $record1 )
+			     { $many_count0++; &print_inboth; } 
+			else { &print_in0; }
+			&read_next;
+		}
+	}
+
+	if ( $need_next1 == 1 ) 
+    	{ 
+		$i=1; &indirect;
+		&read_next;
+		$need_next1 = 0;
+		while ( $record1 eq $prev_record1 )
+		{
+			$many_flag1++;
+			if ( $record1 eq $prev_record0 )
+			     { $prev_flag = 1; $many_count1++; &print_inboth; } 
+			else { &print_in1; }
+			&read_next;
+		}
+	}
+
+	if ( $many_flag0 > 0 && $many_flag1 > 0 )
+	{
+		$many_flag0++; # Increment, since the flag was really a flag set on the second run.
+		$many_flag1++;
+		print "$prev_record1 has a ${many_flag0}:${many_flag1} relationship.  Please check manually.\n";
+	}
+
+}
+
+#---------------
+# Cleanup the rest of the file.
+
+until ( $eof0 == 1 )
+{
+	chomp $line0; # Start here instead of read from file, since previous line hasn't been put anywhere.
+	&read_record0;
+	&print_in0;
+	unless ( defined($line0 = <FILE0> ) ) { $eof0 = 1; } 
+}
+
+until ( $eof1 == 1 )
+{
+	chomp $line1;
+	&read_record1;
+	&print_in1;
+	unless ( defined($line1 = <FILE1> ) ) { $eof1 = 1; } 
+}
+
+print "dupes 0: $many_count0\n";
+print "dupes 1: $many_count1\n\n";
+print "in_0   : $in0_count	($out_file0)\n";
+print "in_1   : $in1_count	($out_file1)\n";
+print "in_both: $in_both_count	($out_file_both)\n\n";
+
+#-------------------------- 
+# Check counts:
+
+print "$final_count0 != $in_both_count - $many_count1 + $in0_count $final_count1 != $in_both_count - $many_count0 + $in1_count \n" if $debug;
+
+# Must subtract the many_count from the opposite list. EX: 2 of kind in file0 produces 2 records in the in_both file, but there is only one record in file1.
+if ( $final_count0 != $in_both_count - $many_count1 + $in0_count ||
+     $final_count1 != $in_both_count - $many_count0 + $in1_count )
+   { error(9); }
+else
+   { print "Counts OK.\n"; }
+	
+
+close (FILE0);
+close (FILE1);
+close (INBOTH);
+close (INFILE0);
+close (INFILE1);
+close(LOG);
+close(MSGLOG);
+
+#------------------------------------------------------------------------------------
+# subroutines
+
+#-------------------------- 
+# read_next
+
+sub read_next
+{
+	$$prev_record 	= $$record;
+	@$prev_other	= @$other; 	
+
+     	unless ( defined($$line = <FILEHANDLE> ) ) { $$eof = 1; } 
+	chomp $$line;
+	&read_record;
+}
+
+
+#--------------------------
+# read_record
+# Pre processor to avoid keeping the count and return line out of the configuration file.
+
+sub read_record
+{
+	&$read_record;
+	$original_count++;
+	return ($$record, $$line);
+}
+
+#--------------------------
+# indirect
+# Set indirect numbers based upon $i being set.
+
+sub indirect
+{
+	# pointers: 
+	$file 		= "file$i";
+	*FILEHANDLE	= "FILE$i";
+	#$filehandle	= "FILE$i";
+	$sort_file 	= "sort_file$i";
+	$line 		= "line$i";
+	$record 	= "record$i";
+	$prev_record 	= "prev_record$i";
+	$read_record 	= "read_record$i";
+	$other 		= "other$i";
+	$prev_other 	= "prev_other$i";
+	$eof		= "eof$i";
+	$final_count	= "final_count$i";
+}
+
+#--------------------------
+# print_in<>
+
+sub print_inboth
+{
+	if ( $opt_m ) 
+	{ 
+		if ( $prev_flag )
+		     { print INBOTH $record1, @prev_other0, @other1; }
+		else { print INBOTH $record1, @other0, @other1; }
+	} elsif ( $opt_l ) { 
+		print INBOTH $line1; 
+	} else { 
+		print INBOTH $record1; 	# Print record1 because record0 has moved on when looking at file1
+					# on a x:many relationship.  If this is a 1:1, then printing
+					# either should suffice.
+	}
+	print INBOTH "\n";
+
+	$in_both_count ++;
+	$need_next0 = 1; 
+	$need_next1 = 1;
+	$prev_flag  = 0;
+}
+
+sub print_in0
+{
+	if    ( $opt_m ) { print INFILE0 $record0,@other0 ; } 
+	elsif ( $opt_l ) { print INFILE0 $line0; }
+	else             { print INFILE0 $record0; }
+	print INFILE0 "\n"; 
+
+	$in0_count ++;
+	$need_next0 = 1;
+}
+
+sub print_in1
+{
+	if    ( $opt_m ) { print INFILE1 $record1,@other1 ; } 
+	elsif ( $opt_l ) { print INFILE1 $line1; }
+	else             { print INFILE1 $record1; }
+	print INFILE1 "\n"; 
+
+	$in1_count ++;
+	$need_next1 = 1;
+}
+
+#--------------------------
+# CALL:         error(number [error_args...]);
+# RETURN:       ret_value;
+sub error
+{
+        my ($ret_value, @error_args) = @_;
+	my $error_string;
+	for ($ret_value)
+        {
+                /^1$/ && do {$error_string="Could not open $error_args[0]." ; last;}; # Fail on open.
+                /^2$/ && do {$error_string="Could not run $error_args[0]." ; last;}; # Fail on pipe.
+                /^3$/ && do {$error_string="The -f <config_file> flag must be set if -m is used." ; last;};
+                /^4$/ && do {$error_string="The -f <config_file> flag must be set if -s is used." ; last;};
+                /^5$/ && do {$error_string="The -f <config_file> flag must be set if -c is used." ; last;};
+                /^6$/ && do {$error_string="The -s flag must be set if -u is used." ; last;};
+                /^7$/ && do {$error_string="Please supply 2 file names." ; last;};
+                /^8$/ && do {$error_string="$error_args[0] is empty." ; last;}; 
+		/^9$/ && do {$error_string="Counts do not match." ; last;};
+		/^10$/ && do {$error_string="Please use either -m or -l, not both." ; last;};
+                /^11$/ && do {$error_string="The -f <config_file> flag must be set if -l is used." ; last;};
+        }
+        print(STDERR "ERROR: $progname ($ret_value): $error_string \n\n") if ($ret_value) ; # this should fail if $ret_value is 0.
+
+
+print(STDERR                                                               
+"Usage:\t$progname <file0> <file1>
+   or\t$progname -cf <config_file>
+   or\t$progname -[msu]f <config_file>
+	  -c Checks the <config_file>.
+	  -l Prints the entire line (record only is default.)
+	  -m Merges the input files.
+	  -s Sorts the input files first.
+	  -u Uniqs the input files first.
+	  -v Debug
+\n");
+	exit $ret_value;
+}
+
+#----------------------------------------------------------------------------- 
+# Paging and logging:
+sub append_log 
+{
+	# Builds MSGLOG until it is mailed.
+	if ( @_[0] eq "-m" ) { shift; print MSGLOG "@_\n"; }
+	
+	# Append to LOG.
+	print LOG &dts, " : $progname on $hostname : @_\n";
+}
+
+sub log_file
+{
+	# Append contents of file to MSGLOG and LOG.
+
+	my $mlog;
+	if ( @_[0] eq "-m" ) { shift; $mlog = 1; }
+
+	*MLOGFILE = @_[0];
+	while (<MLOGFILE>)  
+	{
+		print LOG dts(), " : $progname on $hostname : ", $_ ;
+		print MSGLOG $_ if $mlog;
+	}
+}
+
+
+sub dts
+# Returns 20061113.111716 for now.
+{
+	my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time);
+	my $month = ("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")[$mon];
+	my $dts = sprintf "%4d%2.2d%2.2d.%2.2d%2.2d%2.2d",$year+1900, $mon, $mday, $hour, $min, $sec;
+	return $dts;
+}
